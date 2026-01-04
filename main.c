@@ -66,10 +66,60 @@ typedef struct {
     } isa;
     uint32_t e_version;
     uint64_t entry_addr;
-    uint64_t program_header_off;
-    uint64_t section_header_off;
     uint32_t e_flags;
 } Header;
+
+typedef struct {
+    uint64_t name;
+    enum {
+        // Section header table entry unused
+        SHT_NULL = 0x0,
+        // Program data
+        SHT_PROGBITS = 0x1,
+        // Symbol table
+        SHT_SYMTAB = 0x2,
+        // String table
+        SHT_STRTAB = 0x3,
+        // Relocation entries with addends
+        SHT_RELA = 0x4,
+        // Symbol hash table
+        SHT_HASH = 0x5,
+        // Dynamic linking information
+        SHT_DYNAMIC = 0x6,
+        // Notes
+        SHT_NOTE = 0x7,
+        // Program space with no data (bss)
+        SHT_NOBITS = 0x8,
+        // Relocation entries, no addends
+        SHT_REL = 0x9,
+        // Reserved
+        SHT_SHLIB = 0x0A,
+        // Dynamic linker symbol table
+        SHT_DYNSYM = 0x0B,
+        // Array of constructors
+        SHT_INIT_ARRAY = 0x0E,
+        // Array of destructors
+        SHT_FINI_ARRAY = 0x0F,
+        // Array of pre-constructors
+        SHT_PREINIT_ARRAY = 0x10,
+        // Section group
+        SHT_GROUP = 0x11,
+        // Extended section indices
+        SHT_SYMTAB_SHNDX = 0x12,
+        // Number of defined types.
+        SHT_NUM = 0x13,
+    } type;
+    uint64_t flags;
+    uint64_t address;
+    uint64_t offset;
+    uint64_t size;
+    // related section
+    uint32_t link;
+    uint32_t info;
+    uint64_t address_align;
+    uint64_t entry_size;
+    char *data;
+} SectionHeader;
 
 uint8_t read8(FILE *f) {
     uint8_t b;
@@ -183,9 +233,62 @@ void log_header(Header header) {
     printf("isa: %s\n", isa_names[header.isa]);
     printf("e_version: %d\n", header.e_version);
     printf("entry_addr: %lx\n", header.entry_addr);
-    printf("e_phoff: %lx\n", header.program_header_off);
-    printf("e_shoff: %lx\n", header.section_header_off);
     printf("e_flags: %d\n", header.e_flags);
+}
+
+void log_section_header(SectionHeader hdr, SectionHeader names) {
+    char *type_names[] = {
+        [SHT_NULL] = "SHT_NULL",
+        [SHT_PROGBITS] = "SHT_PROGBITS",
+        [SHT_SYMTAB] = "SHT_SYMTAB",
+        [SHT_STRTAB] = "SHT_STRTAB",
+        [SHT_RELA] = "SHT_RELA",
+        [SHT_HASH] = "SHT_HASH",
+        [SHT_DYNAMIC] = "SHT_DYNAMIC",
+        [SHT_NOTE] = "SHT_NOTE",
+        [SHT_NOBITS] = "SHT_NOBITS",
+        [SHT_REL] = "SHT_REL",
+        [SHT_SHLIB] = "SHT_SHLIB",
+        [SHT_DYNSYM] = "SHT_DYNSYM",
+        [SHT_INIT_ARRAY] = "SHT_INIT_ARRAY",
+        [SHT_FINI_ARRAY] = "SHT_FINI_ARRAY",
+        [SHT_PREINIT_ARRAY] = "SHT_PREINIT_ARRAY",
+        [SHT_GROUP] = "SHT_GROUP",
+        [SHT_SYMTAB_SHNDX] = "SHT_SYMTAB_SHNDX",
+        [SHT_NUM] = "SHT_NUM",
+    };
+    printf("Name: %s\n", &names.data[hdr.name]);
+    printf("Type: %s\n", type_names[hdr.type]);
+    printf("Flags: %lx\n", hdr.flags);
+    printf("Address: %lx\n", hdr.address);
+    printf("Offset: %ld\n", hdr.offset);
+    printf("Size: %ld\n", hdr.size);
+    printf("Link: %d\n", hdr.link);
+    printf("Info: %d\n", hdr.info);
+    printf("Address align: %ld\n", hdr.address_align);
+    printf("Entry size: %ld\n", hdr.entry_size);
+}
+
+SectionHeader read_section_hdr(FILE *f, Width w, Endianess e) {
+    SectionHeader hdr = {0};
+    hdr.name = read32(f, e);
+    hdr.type = read32(f, e);
+    hdr.flags = read32or64(f, w, e);
+    hdr.address = read32or64(f, w, e);
+    hdr.offset = read32or64(f, w, e);
+    hdr.size = read32or64(f, w, e);
+    hdr.link = read32(f, e);
+    hdr.info = read32(f, e);
+    hdr.address_align = read32or64(f, w, e);
+    hdr.entry_size = read32or64(f, w, e);
+    long position = ftell(f);
+    if (hdr.size) {
+        hdr.data = malloc(hdr.size);
+        fseek(f, hdr.offset, SEEK_SET);
+        fread(hdr.data, 1, hdr.size, f);
+        fseek(f, position, SEEK_SET);
+    }
+    return hdr;
 }
 
 int main() {
@@ -208,14 +311,23 @@ int main() {
     hdr.e_version = read32(f, e);
     Width w = hdr.width;
     hdr.entry_addr = read32or64(f, w, e);
-    hdr.program_header_off = read32or64(f, w, e);
-    hdr.section_header_off = read32or64(f, w, e);
+    uint64_t program_header_off = read32or64(f, w, e);
+    uint64_t section_header_off = read32or64(f, w, e);
     hdr.e_flags = read32(f, e);
     uint16_t header_size = read16(f, e);
     uint16_t program_header_size = read16(f, e);
     uint16_t prog_header_entries_cnt = read16(f, e);
     uint16_t section_header_size = read16(f, e);
     uint16_t section_header_entries_cnt = read16(f, e);
+    uint16_t section_name_idx = read16(f, e);
+    fseek(f, section_header_off+section_name_idx*section_header_size, SEEK_SET);
+    SectionHeader names = read_section_hdr(f, w, e);
+    fseek(f, section_header_off, SEEK_SET);
+    for (int i = 0; i < section_header_entries_cnt; i++) {
+        SectionHeader sec_hdr = read_section_hdr(f, w, e);
+        log_section_header(sec_hdr, names);
+        printf("------\n");
+    }
     fclose(f);
     log_header(hdr);
 }
