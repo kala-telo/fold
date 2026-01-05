@@ -109,7 +109,21 @@ typedef struct {
         // Number of defined types.
         SHT_NUM = 0x13,
     } type;
-    uint64_t flags;
+    enum {
+        SHF_WRITE = 0x1,
+        SHF_ALLOC = 0x2,
+        SHF_EXECINSTR = 0x4,
+        SHF_MERGE = 0x10,
+        SHF_STRINGS = 0x20,
+        SHF_INFO_LINK = 0x40,
+        SHF_LINK_ORDER = 0x80,
+        SHF_OS_NONCONFORMING = 0x100,
+        SHF_GROUP = 0x200,
+        SHF_TLS = 0x400,
+        SHF_COMPRESSED = 0x800,
+        SHF_MASKOS = 0x0ff00000,
+        SHF_MASKPROC = 0xf0000000,
+    } flags;
     uint64_t address;
     uint64_t offset;
     uint64_t size;
@@ -120,6 +134,12 @@ typedef struct {
     uint64_t entry_size;
     char *data;
 } SectionHeader;
+
+typedef struct {
+    uint64_t address;
+    uint64_t info;
+    int64_t addend;
+} Elf64Rela;
 
 uint8_t read8(FILE *f) {
     uint8_t b;
@@ -259,7 +279,7 @@ void log_section_header(SectionHeader hdr, SectionHeader names) {
     };
     printf("Name: %s\n", &names.data[hdr.name]);
     printf("Type: %s\n", type_names[hdr.type]);
-    printf("Flags: %lx\n", hdr.flags);
+    printf("Flags: %x\n", hdr.flags);
     printf("Address: %lx\n", hdr.address);
     printf("Offset: %ld\n", hdr.offset);
     printf("Size: %ld\n", hdr.size);
@@ -281,12 +301,10 @@ SectionHeader read_section_hdr(FILE *f, Width w, Endianess e) {
     hdr.info = read32(f, e);
     hdr.address_align = read32or64(f, w, e);
     hdr.entry_size = read32or64(f, w, e);
-    long position = ftell(f);
     if (hdr.size) {
         hdr.data = malloc(hdr.size);
         fseek(f, hdr.offset, SEEK_SET);
         fread(hdr.data, 1, hdr.size, f);
-        fseek(f, position, SEEK_SET);
     }
     return hdr;
 }
@@ -296,6 +314,7 @@ int main() {
     uint32_t magic = read32b(f);
     if (magic != 0x7f454c46) {
         fprintf(stderr, "Invalid magic (%x)\n", magic);
+        return 1;
     }
     Header hdr = {0};
     hdr.width = read8(f);
@@ -317,6 +336,8 @@ int main() {
     uint16_t header_size = read16(f, e);
     uint16_t program_header_size = read16(f, e);
     uint16_t prog_header_entries_cnt = read16(f, e);
+    if (program_header_size != 0)
+        abort();
     uint16_t section_header_size = read16(f, e);
     uint16_t section_header_entries_cnt = read16(f, e);
     uint16_t section_name_idx = read16(f, e);
@@ -324,9 +345,15 @@ int main() {
     SectionHeader names = read_section_hdr(f, w, e);
     fseek(f, section_header_off, SEEK_SET);
     for (int i = 0; i < section_header_entries_cnt; i++) {
+        long start = ftell(f);
         SectionHeader sec_hdr = read_section_hdr(f, w, e);
-        log_section_header(sec_hdr, names);
-        printf("------\n");
+        fseek(f, start+section_header_size, SEEK_SET);
+        if (sec_hdr.type == SHT_RELA) {
+            log_section_header(sec_hdr, names);
+            printf("------\n");
+        }
+        if (sec_hdr.data != NULL)
+            free(sec_hdr.data);
     }
     fclose(f);
     log_header(hdr);
