@@ -1,215 +1,81 @@
 #include <stdio.h>
 #include <stdint.h>
-#include <endian.h>
 #include <stdlib.h>
+#include <assert.h>
+#include "headers.h"
+#include "read_helpers.h"
 
-typedef enum {
-    ENDIANESS_LITTLE = 1,
-    ENDIANESS_BIG = 2,
-} Endianess;
-typedef enum {
-    WIDTH_32 = 1,
-    WIDTH_64 = 2,
-} Width;
-typedef struct {
-    Width width;
-    Endianess endianess;
-    uint8_t version;
-    enum {
-        ABI_SystemV       = 0x00,
-        ABI_HPUX          = 0x01,
-        ABI_NetBSD        = 0x02,
-        ABI_Linux         = 0x03,
-        ABI_Hurd          = 0x04,
-        ABI_Solaris       = 0x06,
-        ABI_AIX           = 0x07,
-        ABI_IRIX          = 0x08,
-        ABI_FreeBSD       = 0x09,
-        ABI_Tru64         = 0x0A,
-        ABI_NovellModesto = 0x0B,
-        ABI_OpenBSD       = 0x0C,
-        ABI_OpenVMS       = 0x0D,
-        ABI_NonStop       = 0x0E,
-        ABI_AROS          = 0x0F,
-        ABI_FenixOS       = 0x10,
-        ABI_NuxiCloud     = 0x11,
-        ABI_OpenVOS       = 0x12,
-    } abi;
-    uint8_t abi_version;
-    enum {
-        // Unknown
-        ET_NONE = 0x0000,
-        // Relocatable file
-        ET_REL = 0x0001,
-        // Executable file
-        ET_EXEC = 0x0002,
-        // Shared object
-        ET_DYN = 0x0003,
-        // Core file
-        ET_CORE = 0x0004,
-        // Reserved inclusive range
-        ET_LOOS = 0xFE00,
-        // Operating system specific
-        ET_HIOS = 0xFEFF,
-        // Reserved inclusive range
-        ET_LOPROC = 0xFF00,
-        // Processor specific
-        ET_HIPROC = 0xFFFF,
-    } file_type;
-    enum {
-        // TODO: populate further
-        ISA_NONE  = 0x0000,
-        ISA_X86   = 0x0003,
-        ISA_PPC   = 0x0014,
-        ISA_PPC64 = 0x0015,
-        ISA_AMD64 = 0x003E,
-    } isa;
-    uint32_t e_version;
-    uint64_t entry_addr;
-    uint32_t e_flags;
-} Header;
+#define da_append(xs, x)                                                       \
+    do {                                                                       \
+        if ((xs).len + 1 > (xs).cap) {                                         \
+            if ((xs).cap != 0) {                                               \
+                (xs).cap *= 2;                                                 \
+            } else {                                                           \
+                (xs).cap = 4;                                                  \
+            }                                                                  \
+            (xs).data = realloc((xs).data, sizeof(*(xs).data) * (xs).cap);     \
+            assert((xs).data != NULL);                                         \
+        }                                                                      \
+        (xs).data[(xs).len++] = (x);                                           \
+    } while (0)
 
-typedef struct {
-    uint64_t name;
-    enum {
-        // Section header table entry unused
-        SHT_NULL = 0x0,
-        // Program data
-        SHT_PROGBITS = 0x1,
-        // Symbol table
-        SHT_SYMTAB = 0x2,
-        // String table
-        SHT_STRTAB = 0x3,
-        // Relocation entries with addends
-        SHT_RELA = 0x4,
-        // Symbol hash table
-        SHT_HASH = 0x5,
-        // Dynamic linking information
-        SHT_DYNAMIC = 0x6,
-        // Notes
-        SHT_NOTE = 0x7,
-        // Program space with no data (bss)
-        SHT_NOBITS = 0x8,
-        // Relocation entries, no addends
-        SHT_REL = 0x9,
-        // Reserved
-        SHT_SHLIB = 0x0A,
-        // Dynamic linker symbol table
-        SHT_DYNSYM = 0x0B,
-        // Array of constructors
-        SHT_INIT_ARRAY = 0x0E,
-        // Array of destructors
-        SHT_FINI_ARRAY = 0x0F,
-        // Array of pre-constructors
-        SHT_PREINIT_ARRAY = 0x10,
-        // Section group
-        SHT_GROUP = 0x11,
-        // Extended section indices
-        SHT_SYMTAB_SHNDX = 0x12,
-        // Number of defined types.
-        SHT_NUM = 0x13,
-    } type;
-    enum {
-        SHF_WRITE = 0x1,
-        SHF_ALLOC = 0x2,
-        SHF_EXECINSTR = 0x4,
-        SHF_MERGE = 0x10,
-        SHF_STRINGS = 0x20,
-        SHF_INFO_LINK = 0x40,
-        SHF_LINK_ORDER = 0x80,
-        SHF_OS_NONCONFORMING = 0x100,
-        SHF_GROUP = 0x200,
-        SHF_TLS = 0x400,
-        SHF_COMPRESSED = 0x800,
-        SHF_MASKOS = 0x0ff00000,
-        SHF_MASKPROC = 0xf0000000,
-    } flags;
-    uint64_t address;
-    uint64_t offset;
-    uint64_t size;
-    // related section
-    uint32_t link;
-    uint32_t info;
-    uint64_t address_align;
-    uint64_t entry_size;
-    char *data;
-} SectionHeader;
-
+// FIXME: This thing 100% has endianess isssues, those are to be fixed later
 typedef struct {
     uint64_t address;
-    uint64_t info;
+    struct {
+        enum : uint32_t {
+            //                                Field 	Calculation
+            R_X86_64_NONE = 0,             // none      none
+            R_X86_64_64 = 1,               // word64    S + A
+            R_X86_64_PC32 = 2,             // word32    S + A - P
+            R_X86_64_GOT32 = 3,            // word32    G + A
+            R_X86_64_PLT32 = 4,            // word32    L + A - P
+            R_X86_64_COPY = 5,             // none      none
+            R_X86_64_GLOB_DAT = 6,         // wordclass S
+            R_X86_64_JUMP_SLOT = 7,        // wordclass S
+            R_X86_64_RELATIVE = 8,         // wordclass B + A
+            R_X86_64_GOTPCREL = 9,         // word32    G + GOT + A - P
+            R_X86_64_32 = 10,              // word32    S + A
+            R_X86_64_32S = 11,             // word32    S + A
+            R_X86_64_16 = 12,              // word16    S + A
+            R_X86_64_PC16 = 13,            // word16    S + A - P
+            R_X86_64_8 = 14,               // word8     S + A
+            R_X86_64_PC8 = 15,             // word8     S + A - P
+            R_X86_64_DTPMOD64 = 16,        // word64
+            R_X86_64_DTPOFF64 = 17,        // word64
+            R_X86_64_TPOFF64 = 18,         // word64
+            R_X86_64_TLSGD = 19,           // word32
+            R_X86_64_TLSLD = 20,           // word32
+            R_X86_64_DTPOFF32 = 21,        // word32
+            R_X86_64_GOTTPOFF = 22,        // word32
+            R_X86_64_TPOFF32 = 23,         // word32
+            R_X86_64_PC64 = 24,            // word64    S + A - P
+            R_X86_64_GOTOFF64 = 25,        // word64    S + A - GOT
+            R_X86_64_GOTPC32 = 26,         // word32    GOT + A - P
+            R_X86_64_SIZE32 = 32,          // word32    Z + A
+            R_X86_64_SIZE64 = 33,          // word64    Z + A
+            R_X86_64_GOTPC32_TLSDESC = 34, // word32
+            R_X86_64_TLSDESC_CALL = 35,    // none
+            R_X86_64_TLSDESC = 36,         // word64×2
+            R_X86_64_IRELATIVE = 37,       // wordclass indirect (B + A)
+            R_X86_64_RELATIVE64 = 38,      // word64    B + A
+            R_X86_64_GOTPCRELX = 41,       // word32    G + GOT + A - P
+            R_X86_64_REX_GOTPCRELX = 42,   // word32    G + GOT + A - P
+        } type;
+        uint32_t sym;
+    } info;
     int64_t addend;
-} Elf64Rela;
+} Rela64;
 
-uint8_t read8(FILE *f) {
-    uint8_t b;
-    fread(&b, 1, 1, f);
-    return b;
-}
-static inline uint16_t read16l(FILE *f) {
-    uint16_t b;
-    fread(&b, 2, 1, f);
-    return le16toh(b);
-}
-static inline uint16_t read16b(FILE *f) {
-    uint16_t b;
-    fread(&b, 2, 1, f);
-    return be16toh(b);
-}
-static inline uint16_t read16(FILE *f, Endianess e) {
-    switch (e) {
-    case ENDIANESS_BIG:
-        return read16b(f);
-    case ENDIANESS_LITTLE:
-        return read16l(f);
-    }
-    abort();
-    return -1;
-}
-static inline uint32_t read32l(FILE *f) {
-    uint32_t b;
-    fread(&b, 4, 1, f);
-    return le32toh(b);
-}
-static inline uint32_t read32b(FILE *f) {
-    uint32_t b;
-    fread(&b, 4, 1, f);
-    return be32toh(b);
-}
-static inline uint32_t read32(FILE *f, Endianess e) {
-    switch (e) {
-    case ENDIANESS_BIG:
-        return read32b(f);
-    case ENDIANESS_LITTLE:
-        return read32l(f);
-    }
-    abort();
-    return -1;
-}
-static inline uint64_t read64l(FILE *f) {
-    uint64_t b;
-    fread(&b, 8, 1, f);
-    return le64toh(b);
-}
-static inline uint64_t read64b(FILE *f) {
-    uint64_t b;
-    fread(&b, 8, 1, f);
-    return be64toh(b);
-}
-static inline uint64_t read64(FILE *f, Endianess e) {
-    switch (e) {
-    case ENDIANESS_BIG:
-        return read64b(f);
-    case ENDIANESS_LITTLE:
-        return read64l(f);
-    }
-    abort();
-    return -1;
-}
-
-static inline uint64_t read32or64(FILE *f, Width w, Endianess e) {
-    return (w == WIDTH_32 ? read32(f, e) : read64(f, e));
-}
+// FIXME: This thing 100% has endianess isssues, those are to be fixed later
+typedef struct {
+    uint32_t name;
+    uint8_t info;
+    uint8_t other;
+    uint16_t shndx;
+    uint64_t value;
+    uint64_t size;
+} Symtab64;
 
 void log_header(Header header) {
     char *abi_names[] = {
@@ -256,7 +122,8 @@ void log_header(Header header) {
     printf("e_flags: %d\n", header.e_flags);
 }
 
-void log_section_header(SectionHeader hdr, SectionHeader names) {
+void log_section_header(SectionHeader const *const sections,
+                        SectionHeader const *const hdr, size_t names) {
     char *type_names[] = {
         [SHT_NULL] = "SHT_NULL",
         [SHT_PROGBITS] = "SHT_PROGBITS",
@@ -277,19 +144,87 @@ void log_section_header(SectionHeader hdr, SectionHeader names) {
         [SHT_SYMTAB_SHNDX] = "SHT_SYMTAB_SHNDX",
         [SHT_NUM] = "SHT_NUM",
     };
-    printf("Name: %s\n", &names.data[hdr.name]);
-    printf("Type: %s\n", type_names[hdr.type]);
-    printf("Flags: %x\n", hdr.flags);
-    printf("Address: %lx\n", hdr.address);
-    printf("Offset: %ld\n", hdr.offset);
-    printf("Size: %ld\n", hdr.size);
-    printf("Link: %d\n", hdr.link);
-    printf("Info: %d\n", hdr.info);
-    printf("Address align: %ld\n", hdr.address_align);
-    printf("Entry size: %ld\n", hdr.entry_size);
+    printf("|Name: %s\n", &sections[names].data[hdr->name]);
+    printf("|Type: %s\n", type_names[hdr->type]);
+    printf("|Flags: %x\n", hdr->flags);
+    printf("|Address: %lx\n", hdr->address);
+    printf("|Offset: %ld\n", hdr->offset);
+    printf("|Size: %ld\n", hdr->size);
+    printf("|Link: %d\n", hdr->link);
+    printf("|Info: %d\n", hdr->info);
+    printf("|Address align: %ld\n", hdr->address_align);
+    printf("|Entry size: %ld\n", hdr->entry_size);
+    switch (hdr->type) {
+    case SHT_RELA: {
+        const char *const x86_names[] = {
+            [R_X86_64_NONE] = "R_X86_64_NONE",
+            [R_X86_64_64] = "R_X86_64_64",
+            [R_X86_64_PC32] = "R_X86_64_PC32",
+            [R_X86_64_GOT32] = "R_X86_64_GOT32",
+            [R_X86_64_PLT32] = "R_X86_64_PLT32",
+            [R_X86_64_COPY] = "R_X86_64_COPY",
+            [R_X86_64_GLOB_DAT] = "R_X86_64_GLOB_DAT",
+            [R_X86_64_JUMP_SLOT] = "R_X86_64_JUMP_SLOT",
+            [R_X86_64_RELATIVE] = "R_X86_64_RELATIVE",
+            [R_X86_64_GOTPCREL] = "R_X86_64_GOTPCREL",
+            [R_X86_64_32] = "R_X86_64_32",
+            [R_X86_64_32S] = "R_X86_64_32S",
+            [R_X86_64_16] = "R_X86_64_16",
+            [R_X86_64_PC16] = "R_X86_64_PC16",
+            [R_X86_64_8] = "R_X86_64_8",
+            [R_X86_64_PC8] = "R_X86_64_PC8",
+            [R_X86_64_DTPMOD64] = "R_X86_64_DTPMOD64",
+            [R_X86_64_DTPOFF64] = "R_X86_64_DTPOFF64",
+            [R_X86_64_TPOFF64] = "R_X86_64_TPOFF64",
+            [R_X86_64_TLSGD] = "R_X86_64_TLSGD",
+            [R_X86_64_TLSLD] = "R_X86_64_TLSLD",
+            [R_X86_64_DTPOFF32] = "R_X86_64_DTPOFF32",
+            [R_X86_64_GOTTPOFF] = "R_X86_64_GOTTPOFF",
+            [R_X86_64_TPOFF32] = "R_X86_64_TPOFF32",
+            [R_X86_64_PC64] = "R_X86_64_PC64",
+            [R_X86_64_GOTOFF64] = "R_X86_64_GOTOFF64",
+            [R_X86_64_GOTPC32] = "R_X86_64_GOTPC32",
+            [R_X86_64_SIZE32] = "R_X86_64_SIZE32",
+            [R_X86_64_SIZE64] = "R_X86_64_SIZE64",
+            [R_X86_64_GOTPC32_TLSDESC] = "R_X86_64_GOTPC32_TLSDESC",
+            [R_X86_64_TLSDESC_CALL] = "R_X86_64_TLSDESC_CALL",
+            [R_X86_64_TLSDESC] = "R_X86_64_TLSDESC",
+            [R_X86_64_IRELATIVE] = "R_X86_64_IRELATIVE",
+            [R_X86_64_RELATIVE64] = "R_X86_64_RELATIVE64",
+            [R_X86_64_GOTPCRELX] = "R_X86_64_GOTPCRELX",
+            [R_X86_64_REX_GOTPCRELX] = "R_X86_64_REX_GOTPCRELX",
+        };
+        Rela64 *relas = (void*)hdr->data;
+        assert(hdr->entry_size == sizeof(Rela64));
+        for (size_t i = 0; i < hdr->size/hdr->entry_size; i++) {
+            Rela64 *rela = &relas[i];
+            SectionHeader symnames = sections[hdr->link];
+            Symtab64 symtab = ((Symtab64*)symnames.data)[rela->info.sym];
+            printf("|- Rela `%s' [%d]: %s at %lx (%ld)\n",
+                   &sections[symnames.link].data[symtab.name],
+                   rela->info.sym,
+                   x86_names[rela->info.type],
+                   rela->address,
+                   rela->addend);
+        }
+    } break;
+    case SHT_SYMTAB: {
+        Symtab64 *symbols = (Symtab64*)hdr->data;
+        for (size_t i = 0; i < hdr->size/hdr->entry_size; i++) {
+            Symtab64 sym = symbols[i];
+            printf("|- Symtab: name: `%s'; info: %d; other: %d; shndx: %d; "
+                   "value: %ld; size: %ld\n",
+                   &sections[hdr->link].data[sym.name], sym.info, sym.other,
+                   sym.shndx, sym.value, sym.size);
+        }
+    } break;
+    default:
+        break;
+    }
+    printf("|---------------\n");
 }
 
-SectionHeader read_section_hdr(FILE *f, Width w, Endianess e) {
+SectionHeader read_section_header(FILE *f, Width w, Endianess e) {
     SectionHeader hdr = {0};
     hdr.name = read32(f, e);
     hdr.type = read32(f, e);
@@ -304,18 +239,18 @@ SectionHeader read_section_hdr(FILE *f, Width w, Endianess e) {
     if (hdr.size) {
         hdr.data = malloc(hdr.size);
         fseek(f, hdr.offset, SEEK_SET);
-        fread(hdr.data, 1, hdr.size, f);
+        fread(hdr.data, hdr.size, 1, f);
     }
     return hdr;
 }
 
-int main() {
-    FILE *f = fopen("test.o", "rb");
+Header read_header(FILE *f) {
     uint32_t magic = read32b(f);
     if (magic != 0x7f454c46) {
         fprintf(stderr, "Invalid magic (%x)\n", magic);
-        return 1;
+        exit(1);
     }
+
     Header hdr = {0};
     hdr.width = read8(f);
     hdr.endianess = read8(f);
@@ -330,30 +265,42 @@ int main() {
     hdr.e_version = read32(f, e);
     Width w = hdr.width;
     hdr.entry_addr = read32or64(f, w, e);
-    uint64_t program_header_off = read32or64(f, w, e);
-    uint64_t section_header_off = read32or64(f, w, e);
+    hdr.program_header_off = read32or64(f, w, e);
+    hdr.section_header_off = read32or64(f, w, e);
     hdr.e_flags = read32(f, e);
-    uint16_t header_size = read16(f, e);
-    uint16_t program_header_size = read16(f, e);
-    uint16_t prog_header_entries_cnt = read16(f, e);
-    if (program_header_size != 0)
+    hdr.header_size = read16(f, e);
+    hdr.program_header_size = read16(f, e);
+    hdr.prog_header_entries_cnt = read16(f, e);
+    if (hdr.program_header_size != 0)
         abort();
-    uint16_t section_header_size = read16(f, e);
-    uint16_t section_header_entries_cnt = read16(f, e);
-    uint16_t section_name_idx = read16(f, e);
-    fseek(f, section_header_off+section_name_idx*section_header_size, SEEK_SET);
-    SectionHeader names = read_section_hdr(f, w, e);
-    fseek(f, section_header_off, SEEK_SET);
-    for (int i = 0; i < section_header_entries_cnt; i++) {
+    hdr.section_header_size = read16(f, e);
+    hdr.section_header_entries_cnt = read16(f, e);
+    hdr.section_name_idx = read16(f, e);
+    return hdr;
+}
+
+int main() {
+    FILE *f = fopen("test.o", "rb");
+    Header hdr = read_header(f);
+    Endianess e = hdr.endianess;
+    Width w = hdr.width;
+    fseek(f, hdr.section_header_off + hdr.section_name_idx * hdr.section_header_size,
+          SEEK_SET);
+    SectionHeader names = read_section_header(f, w, e);
+    fseek(f, hdr.section_header_off, SEEK_SET);
+    struct {
+        SectionHeader* data;
+        size_t len, cap;
+    } sections = {0};
+    for (size_t i = 0; i < hdr.section_header_entries_cnt; i++) {
         long start = ftell(f);
-        SectionHeader sec_hdr = read_section_hdr(f, w, e);
-        fseek(f, start+section_header_size, SEEK_SET);
-        if (sec_hdr.type == SHT_RELA) {
-            log_section_header(sec_hdr, names);
-            printf("------\n");
-        }
-        if (sec_hdr.data != NULL)
-            free(sec_hdr.data);
+        SectionHeader sec_hdr = read_section_header(f, w, e);
+        fseek(f, start + hdr.section_header_size, SEEK_SET);
+        da_append(sections, sec_hdr);
+    }
+    for (size_t i = 0; i < sections.len; i++) {
+        SectionHeader sec_hdr = sections.data[i];
+        log_section_header(sections.data, &sec_hdr, hdr.section_name_idx);
     }
     fclose(f);
     log_header(hdr);
