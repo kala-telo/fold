@@ -271,20 +271,46 @@ Header read_header(FILE *f) {
     hdr.header_size = read16(f, e);
     hdr.program_header_size = read16(f, e);
     hdr.prog_header_entries_cnt = read16(f, e);
-    if (hdr.program_header_size != 0)
-        abort();
     hdr.section_header_size = read16(f, e);
     hdr.section_header_entries_cnt = read16(f, e);
     hdr.section_name_idx = read16(f, e);
     return hdr;
 }
 
-int main() {
-    FILE *f = fopen("test.o", "rb");
+void run_rela(SectionHeader *sections, SectionHeader *sec) {
+    assert(sec->type == SHT_RELA);
+    Rela64 *relas = (void*)sec->data;
+    for (size_t i = 0; i < sec->size/sec->entry_size; i++) {
+        Rela64 *rela = &relas[i];
+        // SectionHeader symnames = sections[sec->link];
+        SectionHeader *where = &sections[rela->info.sym];
+        // Symtab64 symtab = ((Symtab64*)symnames.data)[rela->info.sym];
+        switch (rela->info.type) {
+        case R_X86_64_32:
+            printf("x86_64_32 %d\n", rela->info.sym);
+            abort();
+            break;
+        default:
+            abort();
+            break;
+        }
+    }
+}
+
+int main(int argc, char *argv[]) {
+    if (argc != 2) {
+        printf("Usage: %s <file.o>\n", argv[0]);
+        return 1;
+    }
+    FILE *f = fopen(argv[1], "rb");
+    if (f == NULL) {
+        printf("Couldn't open file %s\n", argv[1]);
+        return 1;
+    }
     Header hdr = read_header(f);
     Endianess e = hdr.endianess;
     Width w = hdr.width;
-    fseek(f, hdr.section_header_off + hdr.section_name_idx * hdr.section_header_size,
+    fseek(f, hdr.section_header_off+hdr.section_name_idx*hdr.section_header_size,
           SEEK_SET);
     SectionHeader names = read_section_header(f, w, e);
     fseek(f, hdr.section_header_off, SEEK_SET);
@@ -302,6 +328,12 @@ int main() {
         SectionHeader sec_hdr = sections.data[i];
         log_section_header(sections.data, &sec_hdr, hdr.section_name_idx);
     }
-    fclose(f);
     log_header(hdr);
+    for (size_t i = 0; i < sections.len; i++) {
+        SectionHeader *sec_hdr = &sections.data[i];
+        if (sec_hdr->type == SHT_RELA) {
+            run_rela(sections.data, sec_hdr);
+        }
+    }
+    fclose(f);
 }
